@@ -422,6 +422,73 @@ func TestRobotsTxt(t *testing.T) {
 	testutil.Equal(t, "User-agent: *\nDisallow: /", rw.Body.String())
 }
 
+func TestSigningKey(t *testing.T) {
+	opts := NewOptions()
+	opts.ClientID = "bazquux"
+	opts.ClientSecret = "foobar"
+	opts.CookieSecret = testEncodedCookieSecret
+	opts.ProviderURLString = "https://auth.sso.dev"
+	opts.upstreamConfigs = generateTestUpstreamConfigs("foo-internal.sso.dev")
+
+	// Dummy key; generated only for this test.
+	opts.RequestSigningKey = string(`-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCy38IQCH8QyeNF
+s1zA0XuIyqnTcSfYZg0nPfB+K//pFy7tIOAwmR6th8NykrxFhEQDHKNCmLXt4j8V
+FDHQZtGjUBHRmAXZW8NOQ0EI1vc/Dpt09sU40JQlXZZeL+9/7iAxEfSE3TQr1k7P
+Xwxpjm9rsLSn7FoLnvXco0mc6+d2jjxf4cMgJIaQLKOd783KUQzLVEvBQJ05JnpI
+2xMjS0q33ltMTMGF3QZQN9i4bZKgnItomKxTJbfxftO11FTNLB7og94sWmlThAY5
+/UMjZaWYJ1g89+WUJ+KpVYyJsHPBBkaQG+NYazcLDyIowpzJ1WVkInysshpTqwT+
+UPV4at+jAgMBAAECggEAX8lxK5LRMJVcLlwRZHQJekRE0yS6WKi1jHkfywEW5qRy
+jatYQs4MXpLgN/+Z8IQWw6/XQXdznTLV4xzQXDBjPNhI4ntNTotUOBnNvsUW296f
+ou/uxzDy1FuchU2YLGLBPGXIEko+gOcfhu74P6J1yi5zX6UyxxxVvtR2PCEb7yDw
+m2881chwMblZ5Z8uyF++ajkK3/rqLk64w29+K4ZTDbTcCp5NtBYx2qSEU7yp12rc
+qscUGqxG00Abx+osI3cUn0kOq7356LeR1rfA15yZwOb+s28QYp2WPlVB2hOiYXQv
++ttEOpt0x1QJhBAsFgwY173sD5w2MryRQb1RCwBvqQKBgQDeTdbRzxzAl83h/mAq
+5I+pNEz57veAFVO+iby7TbZ/0w6q+QeT+bHF+TjGHiSlbtg3nd9NPrex2UjiN7ej
++DrxhsSLsP1ZfwDNv6f1Ii1HluJclUFSUNU/LntBjqqCJ959lniNp1y5+ZQ/j2Rf
++ZraVsHRB0itilFeAl5+n7CfxwKBgQDN/K+E1TCbp1inU60Lc9zeb8fqTEP6Mp36
+qQ0Dp+KMLPJ0xQSXFq9ILr4hTJlBqfmTkfmQUcQuwercZ3LNQPbsuIg96bPW73R1
+toXjokd6jUn5sJXCOE0RDumcJrL1VRf9RN1AmM4CgCc/adUMjws3pBc5R4An7UyU
+ouRQhN+5RQKBgFOVTrzqM3RSX22mWAAomb9T09FxQQueeTM91IFUMdcTwwMTyP6h
+Nm8qSmdrM/ojmBYpPKlteGHdQaMUse5rybXAJywiqs84ilPRyNPJOt8c4xVOZRYP
+IG62Ck/W1VNErEnqBn+0OpAOP+g6ANJ5JfkL/6mZJIFjbT58g4z2e9FHAoGBAM3f
+uBkd7lgTuLJ8Gh6xLVYQCJHuqZ49ytFE9qHpwK5zGdyFMSJE5OlS9mpXoXEUjkHk
+iraoUlidLbwdlIr6XBCaGmku07SFXTNtOoIZpjEhV4c762HTXYsoCWos733uD2zt
+z+iJEJVFOnTRtMK5kO+KjD+Oa9L8BCcmauTi+Ku1AoGAZBUzi95THA60hPXI0hm/
+o0J5mfLkFPfhpUmDAMaEpv3bM4byA+IGXSZVc1IZO6cGoaeUHD2Yl1m9a5tv5rF+
+FS9Ht+IgATvGojah+xxQy+kf6tRB9Hn4scyq+64AesXlDbWDEagomQ0hyV/JKSS6
+LQatvnCmBd9omRT2uwYUo+o=
+-----END PRIVATE KEY-----`)
+	opts.Validate()
+
+	expectedPublicKey := string(`-----BEGIN RSA PUBLIC KEY-----
+MIIBCgKCAQEAst/CEAh/EMnjRbNcwNF7iMqp03En2GYNJz3wfiv/6Rcu7SDgMJke
+rYfDcpK8RYREAxyjQpi17eI/FRQx0GbRo1AR0ZgF2VvDTkNBCNb3Pw6bdPbFONCU
+JV2WXi/vf+4gMRH0hN00K9ZOz18MaY5va7C0p+xaC5713KNJnOvndo48X+HDICSG
+kCyjne/NylEMy1RLwUCdOSZ6SNsTI0tKt95bTEzBhd0GUDfYuG2SoJyLaJisUyW3
+8X7TtdRUzSwe6IPeLFppU4QGOf1DI2WlmCdYPPfllCfiqVWMibBzwQZGkBvjWGs3
+Cw8iKMKcydVlZCJ8rLIaU6sE/lD1eGrfowIDAQAB
+-----END RSA PUBLIC KEY-----
+`)
+
+	proxy, err := NewOAuthProxy(opts)
+	if err != nil {
+		t.Errorf("unexpected error %s", err)
+		return
+	}
+	rw := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "https://foo.sso.dev/oauth2/v1/certs", nil)
+	proxy.Handler().ServeHTTP(rw, req)
+	testutil.Equal(t, 200, rw.Code)
+
+	var certs map[string]string
+	if err := json.Unmarshal([]byte(rw.Body.String()), &certs); err != nil {
+		t.Errorf("failed to unmarshal certs from json response: %s", err)
+		return
+	}
+	testutil.Equal(t, expectedPublicKey, certs["signing_key"])
+}
+
 func TestFavicon(t *testing.T) {
 	opts := NewOptions()
 	opts.ClientID = "bazquux"
@@ -975,7 +1042,7 @@ func (st *SignatureTest) MakeRequestWithExpectedKey(method, body, key string) {
 	req.AddCookie(cookie)
 	// This is used by the upstream to validate the signature.
 	st.authenticator.auth = hmacauth.NewHmacAuth(
-		crypto.SHA1, []byte(key), SignatureHeader, SignatureHeaders)
+		crypto.SHA1, []byte(key), HMACSignatureHeader, SignatureHeaders)
 	proxy.Handler().ServeHTTP(st.rw, req)
 }
 

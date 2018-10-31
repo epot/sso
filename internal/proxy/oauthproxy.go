@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -24,8 +25,8 @@ import (
 	"github.com/datadog/datadog-go/statsd"
 )
 
-// SignatureHeader is the header name where the signed request header is stored.
-const SignatureHeader = "Gap-Signature"
+// HMACSignatureHeader is the header name where the signed request header is stored.
+const HMACSignatureHeader = "Gap-Signature"
 
 // SignatureHeaders are the headers that are valid in the request.
 var SignatureHeaders = []string{
@@ -74,6 +75,10 @@ type OAuthProxy struct {
 
 	mux         map[string]*route
 	regexRoutes []*route
+
+	RequestSigningPublicKey string
+	requestSigningKey       crypto.Signer
+	requestSigner           *RequestSigner
 }
 
 type route struct {
@@ -93,11 +98,12 @@ type StateParameter struct {
 
 // UpstreamProxy stores information necessary for proxying the request back to the upstream.
 type UpstreamProxy struct {
-	name         string
-	cookieName   string
-	handler      http.Handler
-	auth         hmacauth.HmacAuth
-	statsdClient *statsd.Client
+	name          string
+	cookieName    string
+	handler       http.Handler
+	auth          hmacauth.HmacAuth
+	requestSigner *RequestSigner
+	statsdClient  *statsd.Client
 }
 
 // deleteSSOCookieHeader deletes the session cookie from the request header string.
@@ -117,6 +123,9 @@ func (u *UpstreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	deleteSSOCookieHeader(r, u.cookieName)
 	if u.auth != nil {
 		u.auth.SignRequest(r)
+	}
+	if u.requestSigner != nil {
+		u.requestSigner.Sign(r)
 	}
 
 	start := time.Now()
@@ -211,13 +220,14 @@ func NewRewriteReverseProxy(route *RewriteRoute, config *UpstreamConfig) *httput
 }
 
 // NewReverseProxyHandler creates a new http.Handler given a httputil.ReverseProxy
-func NewReverseProxyHandler(reverseProxy *httputil.ReverseProxy, opts *Options, config *UpstreamConfig) (http.Handler, []string) {
+func NewReverseProxyHandler(reverseProxy *httputil.ReverseProxy, opts *Options, config *UpstreamConfig, signer *RequestSigner) (http.Handler, []string) {
 	upstreamProxy := &UpstreamProxy{
-		name:         config.Service,
-		handler:      reverseProxy,
-		auth:         config.HMACAuth,
-		cookieName:   opts.CookieName,
-		statsdClient: opts.StatsdClient,
+		name:          config.Service,
+		handler:       reverseProxy,
+		auth:          config.HMACAuth,
+		cookieName:    opts.CookieName,
+		statsdClient:  opts.StatsdClient,
+		requestSigner: signer,
 	}
 	if config.FlushInterval != 0 {
 		return NewStreamingHandler(upstreamProxy, opts, config), []string{"handler:streaming"}
@@ -255,7 +265,7 @@ func generateHmacAuth(signatureKey string) (hmacauth.HmacAuth, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unsupported signature hash algorithm: %s", algorithm)
 	}
-	auth := hmacauth.NewHmacAuth(hash, []byte(secret), SignatureHeader, SignatureHeaders)
+	auth := hmacauth.NewHmacAuth(hash, []byte(secret), HMACSignatureHeader, SignatureHeaders)
 	return auth, nil
 }
 
@@ -283,6 +293,13 @@ func NewOAuthProxy(opts *Options, optFuncs ...func(*OAuthProxy) error) (*OAuthPr
 		c.Run()
 	}()
 
+	var requestSigner *RequestSigner
+	if len(opts.RequestSigningKey) > 0 {
+		if requestSigner, err = NewRequestSigner(opts.RequestSigningKey); err != nil {
+			return nil, fmt.Errorf("could not build RequestSigner: %s", err)
+		}
+	}
+
 	p := &OAuthProxy{
 		CookieCipher:   cipher,
 		CookieDomain:   opts.CookieDomain,
@@ -303,6 +320,8 @@ func NewOAuthProxy(opts *Options, optFuncs ...func(*OAuthProxy) error) (*OAuthPr
 		redirectURL:       &url.URL{Path: "/oauth2/callback"},
 		skipAuthPreflight: opts.SkipAuthPreflight,
 		templates:         getTemplates(),
+
+		requestSigner: requestSigner,
 	}
 
 	for _, optFunc := range optFuncs {
@@ -316,11 +335,13 @@ func NewOAuthProxy(opts *Options, optFuncs ...func(*OAuthProxy) error) (*OAuthPr
 		switch route := upstreamConfig.Route.(type) {
 		case *SimpleRoute:
 			reverseProxy := NewReverseProxy(route.ToURL, upstreamConfig)
-			handler, tags := NewReverseProxyHandler(reverseProxy, opts, upstreamConfig)
+			handler, tags := NewReverseProxyHandler(
+				reverseProxy, opts, upstreamConfig, requestSigner)
 			p.Handle(route.FromURL.Host, handler, tags, upstreamConfig)
 		case *RewriteRoute:
 			reverseProxy := NewRewriteReverseProxy(route, upstreamConfig)
-			handler, tags := NewReverseProxyHandler(reverseProxy, opts, upstreamConfig)
+			handler, tags := NewReverseProxyHandler(
+				reverseProxy, opts, upstreamConfig, requestSigner)
 			p.HandleRegex(route.FromRegex, handler, tags, upstreamConfig)
 		default:
 			return nil, fmt.Errorf("unknown route type")
@@ -335,6 +356,7 @@ func (p *OAuthProxy) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/favicon.ico", p.Favicon)
 	mux.HandleFunc("/robots.txt", p.RobotsTxt)
+	mux.HandleFunc("/oauth2/v1/certs", p.SigningKey)
 	mux.HandleFunc("/oauth2/sign_out", p.SignOut)
 	mux.HandleFunc("/oauth2/callback", p.OAuthCallback)
 	mux.HandleFunc("/oauth2/auth", p.AuthenticateOnly)
@@ -531,6 +553,14 @@ func (p *OAuthProxy) SaveSession(rw http.ResponseWriter, req *http.Request, s *p
 func (p *OAuthProxy) RobotsTxt(rw http.ResponseWriter, _ *http.Request) {
 	rw.WriteHeader(http.StatusOK)
 	fmt.Fprintf(rw, "User-agent: *\nDisallow: /")
+}
+
+// SigningKey publishes the public key necessary for upstream services to validate the digital signature
+// used to sign each request.
+func (p *OAuthProxy) SigningKey(rw http.ResponseWriter, _ *http.Request) {
+	rw.WriteHeader(http.StatusOK)
+	fmt.Fprintf(rw, "{\n\"signing_key\": \"%s\"\n}",
+		strings.Replace(p.requestSigner.PublicKey(), "\n", `\n`, -1))
 }
 
 // Favicon will proxy the request as usual if the user is already authenticated
